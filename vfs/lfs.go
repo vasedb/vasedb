@@ -75,8 +75,9 @@ func (lfs *LogStructuredFS) getShardIndex(inum uint64) *indexMap {
 func (lfs *LogStructuredFS) AddSegment(inum uint64, segment Serializable, ttl int64) {
 	shard := lfs.getShardIndex(inum)
 	inode := &INode{
-		RegionID:  lfs.regionID,
-		Offset:    lfs.offset,
+		RegionID: lfs.regionID,
+		Offset:   lfs.offset,
+		// Length 是通过 segment 计算出来的
 		Length:    0,
 		CreatedAt: time.Now().Unix(),
 		ExpiredAt: -1,
@@ -440,7 +441,7 @@ func recoveryIndex(fd *os.File, indexs []*indexMap) error {
 			if imap != nil {
 				// 确保对共享资源访问的线程安全
 				imap.mu.Lock()
-				imap.index[node.inode.RegionID] = node.inode
+				imap.index[node.inum] = node.inode
 				imap.mu.Unlock()
 			} else {
 				equeue <- errors.New("no corresponding index shard")
