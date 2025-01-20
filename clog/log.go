@@ -51,7 +51,7 @@ func multipleLogger(out io.Writer, prefix string, flag int) {
 	clog = log.New(out, prefix, flag)
 }
 
-func SetOutput(path string) error {
+func SetOutput(path string) {
 	// 使用 lumberjack 设置日志轮转
 	lumberjackLogger := &lumberjack.Logger{
 		Filename:   path,
@@ -63,7 +63,6 @@ func SetOutput(path string) error {
 
 	// 正常模式的日志记录需要输出到控制台和日志文件中
 	multipleLogger(io.MultiWriter(os.Stdout, lumberjackLogger), "["+processName+":C] ", log.Ldate|log.Ltime)
-	return nil
 }
 
 func Error(v ...interface{}) {

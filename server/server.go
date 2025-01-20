@@ -111,7 +111,7 @@ func (hs *HttpServer) Startup() error {
 
 	// 这个函数是一个阻塞函数
 	err := hs.serv.ListenAndServe()
-	if err != nil {
+	if err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("failed to start http api server :%w", err)
 	}
 
@@ -133,6 +133,8 @@ func (hs *HttpServer) Shutdown() error {
 			return fmt.Errorf("failed to shutdown the storage engine: %w", err)
 		}
 	}
+
+	storage.ExportSnapshotIndex()
 
 	return nil
 }

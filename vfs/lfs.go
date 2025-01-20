@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/auula/wiredkv/clog"
 	"github.com/auula/wiredkv/utils"
 )
 
@@ -79,7 +80,7 @@ type LogStructuredFS struct {
 	regions     map[uint64]*os.File
 	gcstate     GC_STATUS
 	gcdone      chan struct{}
-	dirtyRegion []uint64
+	dirtyRegion []*os.File
 }
 
 // AddSegment 会向 LogStructuredFS 虚拟文件系统插入一条 Segment 记录
@@ -133,20 +134,16 @@ func (lfs *LogStructuredFS) ChangeRegions() error {
 	lfs.mu.Lock()
 	defer lfs.mu.Unlock()
 
-	err := utils.CloseFile(lfs.active)
+	err := lfs.active.Sync()
 	if err != nil {
-		return fmt.Errorf("failed to close active file: %w", err)
+		return fmt.Errorf("failed to change active regions: %w", err)
 	}
 
-	file, err := os.Open(filepath.Join(lfs.directory, formatDataFileName(lfs.regionID)))
-	if err != nil {
-		return fmt.Errorf("failed to change active file read only: %w", err)
-	}
-	lfs.regions[lfs.regionID] = file
+	lfs.regions[lfs.regionID] = lfs.active
 
 	err = lfs.createActiveRegion()
 	if err != nil {
-		return fmt.Errorf("failed to chanage active file: %w", err)
+		return fmt.Errorf("failed to chanage active regions: %w", err)
 	}
 
 	return nil
@@ -189,16 +186,18 @@ func (lfs *LogStructuredFS) recoverRegions() error {
 
 	for _, file := range files {
 		if !file.IsDir() && strings.HasSuffix(file.Name(), fileExtension) {
-			regions, err := os.Open(filepath.Join(lfs.directory, file.Name()))
-			if err != nil {
-				return fmt.Errorf("failed to open data file: %w", err)
-			}
+			if strings.HasPrefix(file.Name(), "0") {
+				regions, err := os.OpenFile(filepath.Join(lfs.directory, file.Name()), os.O_RDWR, fsPerm)
+				if err != nil {
+					return fmt.Errorf("failed to open data file: %w", err)
+				}
 
-			regionID, err := parseDataFileName(file.Name())
-			if err != nil {
-				return fmt.Errorf("failed to get regions id: %w", err)
+				regionID, err := parseDataFileName(file.Name())
+				if err != nil {
+					return fmt.Errorf("failed to get regions id: %w", err)
+				}
+				lfs.regions[regionID] = regions
 			}
-			lfs.regions[regionID] = regions
 		}
 	}
 
@@ -307,20 +306,7 @@ func (lfs *LogStructuredFS) StartRegionGC(cycle_second time.Duration) {
 					continue
 				}
 
-				// 执行 gc 垃圾回收逻辑
-				if len(lfs.regions) >= 3 {
-					for v := range lfs.regions {
-						lfs.dirtyRegion = append(lfs.dirtyRegion, v)
-					}
-					// 对 regionIds 切片从小到大排序
-					sort.Slice(lfs.dirtyRegion, func(i, j int) bool {
-						return lfs.dirtyRegion[i] < lfs.dirtyRegion[j]
-					})
-					// 执行对旧数据文件的压缩
-					compressorDirtyRegion(lfs.dirtyRegion[:1], lfs.indexs, lfs.active)
-				} else {
-
-				}
+				lfs.compressDirtyRegion()
 
 				// 修改 gc 停止运行状态
 				lfs.gcstate = GC_STOP
@@ -400,11 +386,6 @@ func (lfs *LogStructuredFS) CloseFS() error {
 		}
 	}
 
-	err := utils.CloseFile(lfs.active)
-	if err != nil {
-		return fmt.Errorf("failed to close active region: %w", err)
-	}
-
 	// 如果有 index 文件的快照，就从 index 文件快照进行恢复，如果没有就全局扫描
 	return lfs.ExportSnapshotIndex()
 }
@@ -414,9 +395,6 @@ func (lfs *LogStructuredFS) CloseFS() error {
 // 例如 RAM 512 MB < 1GB，如果 1GB 快照不能全部序列化到磁盘上，
 // 映射大文件到内存可能不是一个好的选择，因为它会占用大量的虚拟内存空间，会出现 swap 交换内存页。
 func (lfs *LogStructuredFS) ExportSnapshotIndex() error {
-	lfs.mu.Lock()
-	defer lfs.mu.Unlock()
-
 	filePath := filepath.Join(lfs.directory, indexFileName)
 	fd, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fsPerm)
 	if err != nil {
@@ -582,19 +560,16 @@ func crashRecoveryAllIndex(regions map[uint64]*os.File, indexs []*indexMap) erro
 					continue
 				}
 
-				// 计算一整块记录的大小，+4 CRC 校验码占用 4 个字节
-				size := 26 + segment.KeySize + segment.ValueSize + 4
-
 				// 否则继续往下执行，构建重新 inode 索引
 				imap.index[inum] = &INode{
 					RegionID:  regionId,
 					Position:  offset,
-					Length:    size,
+					Length:    segment.Size(),
 					CreatedAt: segment.CreatedAt,
 					ExpiredAt: segment.ExpiredAt,
 				}
 
-				offset += uint64(size)
+				offset += uint64(segment.Size())
 			} else {
 				// 找不到索引就抛出异常
 				return errors.New("no corresponding index shard")
@@ -756,7 +731,7 @@ func readSegment(fd *os.File, offset uint64, bufsize int64) (uint64, *Segment, e
 }
 
 func generateFileName(regionID uint64) (string, error) {
-	fileName := fmt.Sprintf("%08d%s", regionID, fileExtension)
+	fileName := formatDataFileName(regionID)
 	// 验证 regionID 是否以 0 开头（仅对 8 位数有效）
 	if strings.HasPrefix(fileName, "0") {
 		return fileName, nil
@@ -922,13 +897,68 @@ func serializedSegment(seg *Segment) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func compressorDirtyRegion(dirtyRegion []uint64, indexs []*indexMap, fd *os.File) error {
-	// 1. 对数据文件进行压缩
-	// 2. 通过 region ID 找到数据文件
-	// 3. 从文件头部开始扫描文件的记录
-	// 4. 使用记录的时间戳和内存索引时间戳比较
-	// 5. 如果一致就迁移文件到新文件中
-	// 6. 最后删除旧数据文件
+// 垃圾回收压缩器工作原理
+// 1. 如果磁盘上没有索引快照，就全局扫描恢复索引
+// 2. 当索引恢复之后，运行了一段时间出发垃圾回收
+// 3. 启动 GC 扫描磁盘数据文件和内存索引最新版比较
+// 4. 如果磁盘上的文件记录和索引记录对上就迁移到新文件
+// 5. 如果没有对上说明是旧文件，不要管它重复这个过程
+// 6. 直到 GC 扫描完整个数据文件完成，最后删除这个文件
+// 7. PS：重点是反向扫描，通过磁盘数据文件中 Key 名找内存到记录比较
+// 8. 如果通过内存索引来找，会出现无法确定一个文件是否扫描干净
+// 9. 因为内存索引的对应的数据记录会分配在不同数据文件中
+func (lfs *LogStructuredFS) compressDirtyRegion() error {
+	// 执行 gc 垃圾回收逻辑
+	if len(lfs.regions) >= 3 {
+		var regionIds []uint64
+		for v := range lfs.regions {
+			regionIds = append(regionIds, v)
+		}
+		// 对 regionIds 切片从小到大排序
+		sort.Slice(regionIds, func(i, j int) bool {
+			return regionIds[i] < regionIds[j]
+		})
+		// 找到前两个旧数据文件
+		for i := 0; i < len(regionIds)-1; i++ {
+			lfs.dirtyRegion = append(lfs.dirtyRegion, lfs.regions[regionIds[i]])
+		}
+		// 执行对旧数据文件的压缩
+		for _, fd := range lfs.dirtyRegion {
+			finfo, err := fd.Stat()
+			if err != nil {
+				return err
+			}
+
+			readOffset := uint64(len(dataFileMetadata))
+
+			for readOffset < uint64(finfo.Size()) {
+				inum, segment, err := readSegment(fd, uint64(readOffset), 26)
+				if err != nil {
+					return err
+				}
+				imap := lfs.indexs[inum%uint64(indexShard)]
+				if imap.index[inum].CreatedAt == segment.CreatedAt {
+					// 迁移数据到新的数据文件中
+					appendBinaryToFile(lfs.active, segment)
+					// 把 inum 和新的 region 映射起来
+					imap.index[inum].RegionID = lfs.regionID
+					imap.index[inum].Position = lfs.offset + uint64(segment.Size())
+					readOffset += uint64(segment.Size())
+				} else {
+					continue
+				}
+			}
+
+			err = lfs.active.Sync()
+			if err != nil {
+				return fmt.Errorf("failed to close active migrate region: %w", err)
+			}
+			// 删除这个文件
+		}
+	} else {
+		clog.Warnf("dirty region (%d) does not meet garbage collection status", len(lfs.regions))
+	}
+
 	return nil
 }
 
