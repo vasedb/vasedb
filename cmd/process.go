@@ -30,7 +30,7 @@ import (
 	"github.com/auula/wiredkv/server"
 	"github.com/auula/wiredkv/utils"
 	"github.com/auula/wiredkv/vfs"
-	gcolor "github.com/gookit/color"
+	"github.com/gookit/color"
 )
 
 const (
@@ -48,7 +48,7 @@ var (
 // 初始化全局需要使用的组件
 // 解析命令行输入的参数，默认命令行参数优先级最高，但是相对于能设置参数比较少
 func init() {
-	gcolor.RGB(255, 123, 34).Println(banner)
+	color.RGB(255, 123, 34).Println(banner)
 	fl := parseFlags()
 
 	if conf.HasCustom(fl.config) {
