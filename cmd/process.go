@@ -67,9 +67,9 @@ func init() {
 	if fl.auth != conf.Default.Password {
 		conf.Settings.Password = fl.auth
 	} else {
-		// 如果命令行没有传入密码，系统随机生成一串 20 位的密码
-		conf.Settings.Password = utils.RandomString(20)
-		clog.Infof("The default password is: %s", conf.Settings.Password)
+		// 如果命令行没有传入密码，系统随机生成一串 26 位的密码
+		conf.Settings.Password = utils.RandomString(26)
+		clog.Warnf("The default password is: %s", conf.Settings.Password)
 	}
 
 	if fl.path != conf.Default.Path {
