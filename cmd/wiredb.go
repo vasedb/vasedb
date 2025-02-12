@@ -86,10 +86,9 @@ func init() {
 
 	clog.Debug(conf.Settings)
 
-	var err error = nil
 	// Validate the input parameters, even if there is a default configuration,
 	// the command line parameters are not constrained
-	err = conf.Vaildated(conf.Settings)
+	err := conf.Vaildated(conf.Settings)
 	if err != nil {
 		clog.Failed(err)
 	}
@@ -147,7 +146,7 @@ func runServer() {
 	if conf.Settings.IsEncryptionEnabled() {
 		// Set file data to use AES cryptor algorithm
 		fss.SetEncryptor(vfs.AESCryptor, conf.Settings.Secret())
-		clog.Info("Static encryptor activated successfully")
+		clog.Info("Static encryptor activated was successfully")
 	}
 
 	if conf.Settings.IsRegionGCEnabled() {
