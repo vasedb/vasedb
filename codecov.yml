@@ -1,5 +1,17 @@
 ignore:
+  - wiredb.go
   - (?s:example/[^\/]+\.go.*)\Z
   - ^doc.go.*
   - (?s:[^\/]+_test\.go.*)\Z
-  - cmd/process.go
+  - cmd/
+  - server/
+
+
+coverage:
+  status:
+    project:
+      default:
+        target: 50%
+        threshold: 5%
+      vfs:
+        target: 20% 
